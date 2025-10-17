@@ -1,25 +1,26 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import sqlite3
 import json
 from datetime import datetime
-import uvicorn
 
-app = FastAPI(title="Restaurant MCP Server")
+app = FastAPI(title="Wellness Center MCP Server - Telnyx Integration")
 
-# Database setup
+# Initialize database
 def init_db():
-    conn = sqlite3.connect('restaurant.db')
+    conn = sqlite3.connect('wellness.db')
     cursor = conn.cursor()
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS reservations (
+        CREATE TABLE IF NOT EXISTS appointments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            customer_name TEXT NOT NULL,
+            patient_name TEXT NOT NULL,
             phone_number TEXT NOT NULL,
-            reservation_date TEXT NOT NULL,
-            reservation_time TEXT NOT NULL,
-            party_size INTEGER NOT NULL,
+            appointment_date TEXT NOT NULL,
+            appointment_time TEXT NOT NULL,
+            appointment_type TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            notes TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -29,157 +30,320 @@ def init_db():
 init_db()
 
 # Data Models
-class ReservationRequest(BaseModel):
-    customer_name: str
-    phone_number: str
-    reservation_date: str
-    reservation_time: str
-    party_size: int
+class TelnyxWebhookRequest(BaseModel):
+    """Model for Telnyx webhook requests"""
+    call_session_id: Optional[str] = None
+    from_number: Optional[str] = None
+    to_number: Optional[str] = None
+    user_input: Optional[str] = None
+    dynamic_variables: Optional[Dict[str, Any]] = None
 
-class AvailabilityCheck(BaseModel):
-    date: str
-    time: str
-    party_size: int
+class AppointmentRequest(BaseModel):
+    patient_name: str
+    phone_number: str 
+    appointment_date: str
+    appointment_time: str
+    appointment_type: str
+    provider: str
+    notes: Optional[str] = None
 
-# MCP Tools Endpoint
+# 🔥 TELNYX WEBHOOK ENDPOINT - This is where Telnyx calls your server
+@app.post("/telnyx/webhook")
+async def telnyx_webhook(request: TelnyxWebhookRequest):
+    """Main webhook endpoint that Telnyx AI Assistant calls"""
+    
+    print(f"Received call from: {request.from_number}")
+    print(f"Call Session ID: {request.call_session_id}")
+    
+    # Extract dynamic variables from Telnyx
+    dynamic_vars = request.dynamic_variables or {}
+    patient_name = dynamic_vars.get("patient_name", "Guest")
+    
+    response = {
+        "session_id": request.call_session_id,
+        "from": request.from_number,
+        "response": "Welcome to Wellness Partners! This is Erica, your scheduling assistant. How may I help you today?",
+        "dynamic_variables": {
+            "patient_name": patient_name,
+            "caller_number": request.from_number
+        }
+    }
+    
+    return response
+
+# 🔥 MCP TOOLS DISCOVERY - Telnyx discovers available tools here
 @app.get("/mcp/tools")
 async def get_tools():
-    """MCP Tools Discovery Endpoint"""
+    """MCP Tools Discovery Endpoint - Telnyx calls this to see what tools you offer"""
     tools = [
         {
             "name": "check_availability",
-            "description": "Check if tables are available for a given date, time and party size",
+            "description": "Check available appointment slots for a given date, time and provider",
             "parameters": {
-                "type": "object",
+                "type": "object", 
                 "properties": {
-                    "date": {"type": "string", "description": "Reservation date (YYYY-MM-DD)"},
-                    "time": {"type": "string", "description": "Reservation time (HH:MM)"},
-                    "party_size": {"type": "integer", "description": "Number of people"}
+                    "date": {"type": "string", "description": "Appointment date (YYYY-MM-DD)"},
+                    "time": {"type": "string", "description": "Appointment time (HH:MM)"},
+                    "provider": {"type": "string", "description": "Healthcare provider name"},
+                    "appointment_type": {"type": "string", "description": "Type of appointment"}
                 },
-                "required": ["date", "time", "party_size"]
+                "required": ["date", "time", "provider", "appointment_type"]
             }
         },
         {
-            "name": "make_reservation",
-            "description": "Create a new restaurant reservation",
+            "name": "book_appointment", 
+            "description": "Schedule a new healthcare appointment",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "customer_name": {"type": "string", "description": "Customer's full name"},
-                    "phone_number": {"type": "string", "description": "Customer's phone number"},
-                    "reservation_date": {"type": "string", "description": "Reservation date (YYYY-MM-DD)"},
-                    "reservation_time": {"type": "string", "description": "Reservation time (HH:MM)"},
-                    "party_size": {"type": "integer", "description": "Number of people"}
+                    "patient_name": {"type": "string", "description": "Patient's full name"},
+                    "phone_number": {"type": "string", "description": "Patient's phone number"},
+                    "appointment_date": {"type": "string", "description": "Appointment date (YYYY-MM-DD)"},
+                    "appointment_time": {"type": "string", "description": "Appointment time (HH:MM)"},
+                    "appointment_type": {"type": "string", "description": "Type of appointment"},
+                    "provider": {"type": "string", "description": "Healthcare provider"},
+                    "notes": {"type": "string", "description": "Any additional notes"}
                 },
-                "required": ["customer_name", "phone_number", "reservation_date", "reservation_time", "party_size"]
+                "required": ["patient_name", "phone_number", "appointment_date", "appointment_time", "appointment_type", "provider"]
             }
         },
         {
-            "name": "get_menu",
-            "description": "Get today's menu specials",
+            "name": "get_services",
+            "description": "Get available healthcare services and providers", 
             "parameters": {
                 "type": "object",
                 "properties": {}
+            }
+        },
+        {
+            "name": "cancel_appointment",
+            "description": "Cancel an existing appointment",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "patient_name": {"type": "string", "description": "Patient's full name"},
+                    "phone_number": {"type": "string", "description": "Patient's phone number"},
+                    "appointment_date": {"type": "string", "description": "Appointment date to cancel"}
+                },
+                "required": ["patient_name", "phone_number", "appointment_date"]
             }
         }
     ]
     return {"tools": tools}
 
-# MCP Tool Execution Endpoint
+# 🔥 MCP TOOL EXECUTION - Telnyx calls specific tools here
 @app.post("/mcp/tools/{tool_name}")
 async def execute_tool(tool_name: str, parameters: dict):
-    """Execute MCP Tools"""
+    """Execute MCP Tools - Telnyx calls this when it needs to use a tool"""
     
     if tool_name == "check_availability":
         return await check_availability(parameters)
     
-    elif tool_name == "make_reservation":
-        return await make_reservation(parameters)
+    elif tool_name == "book_appointment":
+        return await book_appointment(parameters)
     
-    elif tool_name == "get_menu":
-        return await get_menu_specials()
+    elif tool_name == "get_services":
+        return await get_services()
+    
+    elif tool_name == "cancel_appointment":
+        return await cancel_appointment(parameters)
     
     else:
         raise HTTPException(status_code=404, detail="Tool not found")
 
-# Tool Implementations
+# Tool implementations
 async def check_availability(params: dict):
-    """Check table availability"""
+    """Check appointment availability"""
     date = params.get("date")
-    time = params.get("time")
-    party_size = params.get("party_size")
+    time = params.get("time") 
+    provider = params.get("provider")
+    appointment_type = params.get("appointment_type")
     
-    # Simple availability logic (in real app, check against existing reservations)
-    # For demo, assume we have tables for up to 8 people at any time
-    if party_size <= 8:
-        return {
-            "available": True,
-            "message": f"Table for {party_size} is available on {date} at {time}",
-            "suggested_times": [f"{int(time.split(':')[0])+1}:00", f"{int(time.split(':')[0])-1}:00"]
-        }
-    else:
-        return {
-            "available": False,
-            "message": f"Sorry, we cannot accommodate parties larger than 8 people",
-            "suggested_times": []
-        }
+    # Simple availability logic
+    # In real app, check against existing appointments
+    available_slots = [
+        f"{time}",
+        f"{int(time.split(':')[0])+1}:00",
+        f"{int(time.split(':')[0])-1}:00"
+    ]
+    
+    return {
+        "available": True,
+        "message": f"Appointment with {provider} for {appointment_type} is available on {date}",
+        "available_slots": available_slots,
+        "provider": provider,
+        "appointment_type": appointment_type
+    }
 
-async def make_reservation(params: dict):
-    """Create a reservation"""
-    conn = sqlite3.connect('restaurant.db')
+async def book_appointment(params: dict):
+    """Book a new appointment"""
+    conn = sqlite3.connect('wellness.db')
     cursor = conn.cursor()
     
     try:
         cursor.execute('''
-            INSERT INTO reservations (customer_name, phone_number, reservation_date, reservation_time, party_size)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO appointments (patient_name, phone_number, appointment_date, appointment_time, appointment_type, provider, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', (
-            params["customer_name"],
-            params["phone_number"],
-            params["reservation_date"],
-            params["reservation_time"],
-            params["party_size"]
+            params["patient_name"],
+            params["phone_number"], 
+            params["appointment_date"],
+            params["appointment_time"],
+            params["appointment_type"],
+            params["provider"],
+            params.get("notes", "")
         ))
         
-        reservation_id = cursor.lastrowid
+        appointment_id = cursor.lastrowid
         conn.commit()
         
         return {
             "success": True,
-            "reservation_id": reservation_id,
-            "message": f"Reservation confirmed for {params['customer_name']} on {params['reservation_date']} at {params['reservation_time']} for {params['party_size']} people"
+            "appointment_id": appointment_id,
+            "message": f"Appointment confirmed for {params['patient_name']} with {params['provider']} on {params['appointment_date']} at {params['appointment_time']} for {params['appointment_type']}",
+            "confirmation_number": f"APT{appointment_id:04d}"
         }
     
     except Exception as e:
         return {
             "success": False,
-            "message": f"Failed to create reservation: {str(e)}"
+            "message": f"Failed to book appointment: {str(e)}"
         }
     
     finally:
         conn.close()
 
-async def get_menu_specials():
-    """Get today's menu specials"""
-    menu = {
-        "specials": [
-            {"item": "Grilled Salmon", "price": "$24.99", "description": "Fresh salmon with lemon butter sauce"},
-            {"item": "Mushroom Risotto", "price": "$18.99", "description": "Creamy arborio rice with wild mushrooms"},
-            {"item": "Tiramisu", "price": "$8.99", "description": "Classic Italian dessert"}
-        ]
+async def get_services():
+    """Get available services and providers"""
+    services = {
+        "services": [
+            {
+                "type": "Primary Care", 
+                "providers": ["Dr. Smith", "Dr. Johnson", "Dr. Garcia"],
+                "duration": "30-60 minutes",
+                "description": "General health checkups, illness visits, follow-ups"
+            },
+            {
+                "type": "Dermatology",
+                "providers": ["Dr. Brown", "Dr. Davis"],
+                "duration": "45 minutes", 
+                "description": "Skin conditions, mole checks, cosmetic consultations"
+            },
+            {
+                "type": "Physical Therapy",
+                "providers": ["Dr. Wilson", "Dr. Miller"],
+                "duration": "60 minutes",
+                "description": "Rehabilitation, injury recovery, mobility improvement"
+            },
+            {
+                "type": "Mental Health",
+                "providers": ["Dr. Taylor", "Dr. Anderson"],
+                "duration": "50 minutes",
+                "description": "Counseling, therapy sessions, mental wellness"
+            }
+        ],
+        "operating_hours": {
+            "weekdays": "8:00 AM - 5:00 PM",
+            "saturdays": "9:00 AM - 12:00 PM", 
+            "sundays": "Closed"
+        },
+        "contact_info": {
+            "address": "123 Wellness Drive, Health City, HC 12345",
+            "phone": "(555) 123-HEAL"
+        }
     }
-    return menu
+    return services
 
-# Dynamic Webhook Variables Example
-@app.post("/webhook/customer-info")
-async def update_customer_info(customer_data: dict):
-    """Update customer information for dynamic variables"""
-    # Store in session or database
-    return {"status": "updated", "customer_name": customer_data.get("name")}
+async def cancel_appointment(params: dict):
+    """Cancel an existing appointment"""
+    conn = sqlite3.connect('wellness.db')
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute('''
+            DELETE FROM appointments 
+            WHERE patient_name = ? AND phone_number = ? AND appointment_date = ?
+        ''', (
+            params["patient_name"],
+            params["phone_number"],
+            params["appointment_date"]
+        ))
+        
+        conn.commit()
+        
+        if cursor.rowcount > 0:
+            return {
+                "success": True,
+                "message": f"Appointment for {params['patient_name']} on {params['appointment_date']} has been cancelled"
+            }
+        else:
+            return {
+                "success": False,
+                "message": "No appointment found matching those details"
+            }
+    
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Failed to cancel appointment: {str(e)}"
+        }
+    
+    finally:
+        conn.close()
 
+# 🔥 DYNAMIC VARIABLES ENDPOINT - Telnyx uses this for personalization
+@app.post("/dynamic-variables")
+async def update_dynamic_variables(variables: dict):
+    """Update dynamic variables during a call session"""
+    return {
+        "dynamic_variables": {
+            "patient_name": variables.get("patient_name", "Guest"),
+            "last_interaction": datetime.now().isoformat(),
+            "patient_preferences": variables.get("preferences", {}),
+            "call_type": "wellness_booking"
+        }
+    }
+
+# Health check endpoint
 @app.get("/")
 async def root():
-    return {"message": "Restaurant MCP Server is running!"}
+    return {
+        "message": "Wellness Partners MCP Server is running!",
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "endpoints": {
+            "mcp_tools": "/mcp/tools",
+            "telnyx_webhook": "/telnyx/webhook", 
+            "dynamic_variables": "/dynamic-variables"
+        }
+    }
+
+# Get all appointments (for testing/admin)
+@app.get("/appointments")
+async def get_all_appointments():
+    conn = sqlite3.connect('wellness.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM appointments ORDER BY appointment_date, appointment_time')
+    appointments = cursor.fetchall()
+    conn.close()
+    
+    return {
+        "appointments": [
+            {
+                "id": apt[0],
+                "patient_name": apt[1],
+                "phone_number": apt[2],
+                "appointment_date": apt[3],
+                "appointment_time": apt[4],
+                "appointment_type": apt[5],
+                "provider": apt[6],
+                "notes": apt[7],
+                "created_at": apt[8]
+            }
+            for apt in appointments
+        ]
+    }
 
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

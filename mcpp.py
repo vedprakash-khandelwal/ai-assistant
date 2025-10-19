@@ -1,18 +1,10 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+# main.py - Claude-Compatible MCP Server
+import asyncio
+from mcp.server import Server
+from mcp.server.fastapi import create_fastapi_app
+import mcp.types as types
 import sqlite3
-import json
-from datetime import datetime
-
-app = FastAPI(title="Wellness Center MCP Server - Fixed")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],  # Allow both GET and POST
-    allow_headers=["*"],
-)
+from contextlib import asynccontextmanager
 
 # Initialize database
 def init_db():
@@ -27,103 +19,92 @@ def init_db():
             appointment_time TEXT NOT NULL,
             appointment_type TEXT NOT NULL,
             provider TEXT NOT NULL,
-            notes TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     conn.commit()
     conn.close()
 
-init_db()
+@asynccontextmanager
+async def lifespan(server: Server):
+    # Initialize on startup
+    init_db()
+    yield
+    # Cleanup on shutdown
 
-# 🔥 FIXED: Support BOTH GET and POST for tools discovery
-@app.get("/mcp/tools")
-@app.post("/mcp/tools")  # Add POST support
-async def get_tools():
-    """Tools discovery - supports both GET and POST"""
-    return {
-        "tools": [
-            {
-                "name": "check_availability",
-                "description": "Check available appointment slots for healthcare providers",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "date": {"type": "string", "description": "Appointment date (YYYY-MM-DD)"},
-                        "time": {"type": "string", "description": "Appointment time (HH:MM)"},
-                        "provider": {"type": "string", "description": "Healthcare provider name"},
-                        "appointment_type": {"type": "string", "description": "Type of appointment"}
-                    },
-                    "required": ["date", "time", "provider", "appointment_type"]
-                }
-            },
-            {
-                "name": "book_appointment",
-                "description": "Schedule a new healthcare appointment",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "patient_name": {"type": "string", "description": "Patient's full name"},
-                        "phone_number": {"type": "string", "description": "Patient's phone number"},
-                        "appointment_date": {"type": "string", "description": "Appointment date (YYYY-MM-DD)"},
-                        "appointment_time": {"type": "string", "description": "Appointment time (HH:MM)"},
-                        "appointment_type": {"type": "string", "description": "Type of appointment"},
-                        "provider": {"type": "string", "description": "Healthcare provider name"}
-                    },
-                    "required": ["patient_name", "phone_number", "appointment_date", "appointment_time", "appointment_type", "provider"]
-                }
-            },
-            {
-                "name": "get_services",
-                "description": "Get available healthcare services and providers",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
+# Create MCP server
+server = Server("wellness-center", lifespan=lifespan)
+
+@server.list_tools()
+async def handle_list_tools() -> list[types.Tool]:
+    """Return list of available tools"""
+    return [
+        types.Tool(
+            name="check_availability",
+            description="Check available appointment slots for healthcare providers",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string", "description": "YYYY-MM-DD"},
+                    "time": {"type": "string", "description": "HH:MM"},
+                    "provider": {"type": "string", "description": "Doctor name"},
+                    "appointment_type": {"type": "string", "description": "Service type"}
+                },
+                "required": ["date", "time", "provider", "appointment_type"]
             }
-        ]
-    }
+        ),
+        types.Tool(
+            name="book_appointment",
+            description="Schedule a new healthcare appointment",
+            inputSchema={
+                "type": "object", 
+                "properties": {
+                    "patient_name": {"type": "string"},
+                    "phone_number": {"type": "string"},
+                    "appointment_date": {"type": "string"},
+                    "appointment_time": {"type": "string"},
+                    "appointment_type": {"type": "string"},
+                    "provider": {"type": "string"}
+                },
+                "required": ["patient_name", "phone_number", "appointment_date", "appointment_time", "appointment_type", "provider"]
+            }
+        ),
+        types.Tool(
+            name="get_services",
+            description="Get available healthcare services and providers", 
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        )
+    ]
 
-# 🔥 FIXED: Support BOTH path parameter and request body
-@app.post("/mcp/tools/{tool_name}")
-async def execute_tool_path(tool_name: str, request: dict = None):
-    """Tool execution via path parameter"""
-    return await execute_tool_common(tool_name, request or {})
-
-@app.post("/mcp/tools")
-async def execute_tool_body(request: dict):
-    """Tool execution via request body"""
-    tool_name = request.get("name")
-    arguments = request.get("arguments", {})
-    return await execute_tool_common(tool_name, arguments)
-
-# Common tool execution logic
-async def execute_tool_common(tool_name: str, arguments: dict):
-    if not tool_name:
-        raise HTTPException(status_code=400, detail="Tool name is required")
-    
-    if tool_name == "check_availability":
+@server.call_tool()
+async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent]:
+    """Handle tool execution"""
+    if name == "check_availability":
         return await check_availability(arguments)
-    elif tool_name == "book_appointment":
+    elif name == "book_appointment":
         return await book_appointment(arguments)
-    elif tool_name == "get_services":
+    elif name == "get_services":
         return await get_services()
     else:
-        raise HTTPException(status_code=404, detail=f"Tool {tool_name} not found")
+        raise ValueError(f"Unknown tool: {name}")
 
-# Tool implementations
-async def check_availability(params: dict):
-    return {
-        "content": [
-            {
-                "type": "text",
-                "text": f"Available appointments with {params.get('provider', 'Dr. Smith')} on {params.get('date', 'tomorrow')}. Available times: 9:00 AM, 10:00 AM, 2:00 PM, 3:00 PM"
-            }
-        ]
-    }
+async def check_availability(arguments: dict) -> list[types.TextContent]:
+    date = arguments.get("date", "2024-01-01")
+    time = arguments.get("time", "14:00") 
+    provider = arguments.get("provider", "Dr. Smith")
+    appointment_type = arguments.get("appointment_type", "Primary Care")
+    
+    return [
+        types.TextContent(
+            type="text",
+            text=f"Available appointments with {provider} for {appointment_type} on {date} at {time}. Available times: 9:00 AM, 10:00 AM, 2:00 PM, 3:00 PM"
+        )
+    ]
 
-async def book_appointment(params: dict):
+async def book_appointment(arguments: dict) -> list[types.TextContent]:
     conn = sqlite3.connect('wellness.db')
     cursor = conn.cursor()
     
@@ -132,104 +113,52 @@ async def book_appointment(params: dict):
             INSERT INTO appointments (patient_name, phone_number, appointment_date, appointment_time, appointment_type, provider)
             VALUES (?, ?, ?, ?, ?, ?)
         ''', (
-            params.get("patient_name", "Test Patient"),
-            params.get("phone_number", "+1234567890"),
-            params.get("appointment_date", "2024-01-01"),
-            params.get("appointment_time", "14:00"),
-            params.get("appointment_type", "Primary Care"),
-            params.get("provider", "Dr. Smith")
+            arguments.get("patient_name", "Test Patient"),
+            arguments.get("phone_number", "+1234567890"), 
+            arguments.get("appointment_date", "2024-01-01"),
+            arguments.get("appointment_time", "14:00"),
+            arguments.get("appointment_type", "Primary Care"),
+            arguments.get("provider", "Dr. Smith")
         ))
         
         appointment_id = cursor.lastrowid
         conn.commit()
         
-        return {
-            "content": [
-                {
-                    "type": "text", 
-                    "text": f"✅ Appointment confirmed for {params.get('patient_name')} with {params.get('provider')} on {params.get('appointment_date')} at {params.get('appointment_time')}. Confirmation number: APT{appointment_id:04d}"
-                }
-            ]
-        }
+        return [
+            types.TextContent(
+                type="text",
+                text=f"✅ Appointment confirmed! Confirmation #APT{appointment_id:04d}\nPatient: {arguments.get('patient_name')}\nProvider: {arguments.get('provider')}\nDate: {arguments.get('appointment_date')} at {arguments.get('appointment_time')}\nType: {arguments.get('appointment_type')}"
+            )
+        ]
     except Exception as e:
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": f"❌ Failed to book appointment: {str(e)}"
-                }
-            ]
-        }
+        return [
+            types.TextContent(
+                type="text", 
+                text=f"❌ Failed to book appointment: {str(e)}"
+            )
+        ]
     finally:
         conn.close()
 
-async def get_services():
-    return {
-        "content": [
-            {
-                "type": "text",
-                "text": "🏥 **Wellness Partners Services:**\n• Primary Care (Dr. Smith, Dr. Johnson)\n• Dermatology (Dr. Brown) \n• Physical Therapy (Dr. Wilson)\n• Mental Health (Dr. Taylor)\n\n📍 Hours: Mon-Fri 8AM-5PM, Sat 9AM-12PM"
-            }
-        ]
-    }
+async def get_services() -> list[types.TextContent]:
+    return [
+        types.TextContent(
+            type="text",
+            text="🏥 **Wellness Partners Services**\n\n• **Primary Care**: Dr. Smith, Dr. Johnson\n• **Dermatology**: Dr. Brown  \n• **Physical Therapy**: Dr. Wilson\n• **Mental Health**: Dr. Taylor\n\n📍 **Hours**: Monday-Friday 8:00 AM - 5:00 PM, Saturday 9:00 AM - 12:00 PM\n\n📞 **Contact**: (555) 123-HEAL"
+        )
+    ]
 
-# Webhook endpoints (keep as-is)
-@app.post("/telnyx/webhook")
-async def telnyx_webhook(request: dict):
-    return {
-        "session_id": request.get("call_session_id", "test"),
-        "response": "Welcome to Wellness Partners! This is Erica, your scheduling assistant. How may I help you today?",
-        "dynamic_variables": {
-            "patient_name": "Guest",
-            "caller_number": request.get("from_number", "")
-        }
-    }
+# Create FastAPI app
+app = create_fastapi_app(server, "/api/mcp")
 
-@app.post("/dynamic-variables")
-async def dynamic_variables(request: dict):
-    return {
-        "dynamic_variables": {
-            "patient_name": request.get("patient_name", "Guest"),
-            "last_interaction": datetime.now().isoformat()
-        }
-    }
-
-# Debug endpoint to see all appointments
-@app.get("/appointments")
-async def get_appointments():
-    conn = sqlite3.connect('wellness.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM appointments ORDER BY created_at DESC')
-    appointments = cursor.fetchall()
-    conn.close()
-    
-    return {
-        "appointments": [
-            {
-                "id": apt[0],
-                "patient_name": apt[1],
-                "phone_number": apt[2],
-                "date": apt[3],
-                "time": apt[4],
-                "type": apt[5],
-                "provider": apt[6],
-                "created_at": apt[8]
-            }
-            for apt in appointments
-        ]
-    }
-
+# Health check endpoint
 @app.get("/")
-async def root():
+async def health_check():
     return {
-        "message": "✅ Fixed MCP Server is running!",
-        "status": "healthy",
-        "endpoints": {
-            "mcp_tools": "/mcp/tools (GET & POST)",
-            "tool_execution": "/mcp/tools/{name} (POST)",
-            "webhook": "/telnyx/webhook",
-            "appointments": "/appointments"
-        }
+        "status": "running", 
+        "service": "Wellness Center MCP Server",
+        "compatible_with": "Claude Desktop & Telnyx AI",
+        "endpoint": "/api/mcp"
     }
 
 if __name__ == "__main__":

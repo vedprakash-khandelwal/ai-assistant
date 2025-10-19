@@ -78,7 +78,8 @@ async def get_tools():
                 "description": "Get available healthcare services and providers",
                 "parameters": {
                     "type": "object",
-                    "properties": {}
+                    "properties": {},
+                    "required": []
                 }
             }
         ]

@@ -4,13 +4,13 @@ import sqlite3
 import json
 from datetime import datetime
 
-app = FastAPI(title="Universal Wellness MCP Server")
+app = FastAPI(title="Wellness Center MCP Server - Fixed")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["*"],  # Allow both GET and POST
     allow_headers=["*"],
 )
 
@@ -36,30 +36,11 @@ def init_db():
 
 init_db()
 
-# 🔥 MULTIPLE MCP ENDPOINT PATTERNS (Try them all)
-
-# Pattern 1: Standard MCP
+# 🔥 FIXED: Support BOTH GET and POST for tools discovery
 @app.get("/mcp/tools")
-async def mcp_tools_standard():
-    return await get_tools_data()
-
-# Pattern 2: Telnyx-specific path
-@app.get("/v2/ai/mcp_servers/list_tools")
-async def mcp_tools_telnyx():
-    return await get_tools_data()
-
-# Pattern 3: Simple tools endpoint
-@app.get("/tools")
-async def mcp_tools_simple():
-    return await get_tools_data()
-
-# Pattern 4: Root tools
-@app.get("/list_tools")
-async def mcp_tools_root():
-    return await get_tools_data()
-
-# Common tools data
-async def get_tools_data():
+@app.post("/mcp/tools")  # Add POST support
+async def get_tools():
+    """Tools discovery - supports both GET and POST"""
     return {
         "tools": [
             {
@@ -103,24 +84,24 @@ async def get_tools_data():
         ]
     }
 
-# 🔥 MULTIPLE TOOL EXECUTION ENDPOINTS
-
+# 🔥 FIXED: Support BOTH path parameter and request body
 @app.post("/mcp/tools/{tool_name}")
-async def execute_tool_standard(tool_name: str, request: dict):
-    return await execute_tool_common(tool_name, request)
+async def execute_tool_path(tool_name: str, request: dict = None):
+    """Tool execution via path parameter"""
+    return await execute_tool_common(tool_name, request or {})
 
-@app.post("/v2/ai/mcp_servers/execute_tool")
-async def execute_tool_telnyx(request: dict):
+@app.post("/mcp/tools")
+async def execute_tool_body(request: dict):
+    """Tool execution via request body"""
     tool_name = request.get("name")
     arguments = request.get("arguments", {})
     return await execute_tool_common(tool_name, arguments)
 
-@app.post("/tools/{tool_name}")
-async def execute_tool_simple(tool_name: str, request: dict):
-    return await execute_tool_common(tool_name, request)
-
 # Common tool execution logic
 async def execute_tool_common(tool_name: str, arguments: dict):
+    if not tool_name:
+        raise HTTPException(status_code=400, detail="Tool name is required")
+    
     if tool_name == "check_availability":
         return await check_availability(arguments)
     elif tool_name == "book_appointment":
@@ -130,13 +111,13 @@ async def execute_tool_common(tool_name: str, arguments: dict):
     else:
         raise HTTPException(status_code=404, detail=f"Tool {tool_name} not found")
 
-# Your existing tool implementations
+# Tool implementations
 async def check_availability(params: dict):
     return {
         "content": [
             {
                 "type": "text",
-                "text": f"Available appointments with {params.get('provider')} on {params.get('date')}. Times: 2:00 PM, 3:00 PM, 4:00 PM"
+                "text": f"Available appointments with {params.get('provider', 'Dr. Smith')} on {params.get('date', 'tomorrow')}. Available times: 9:00 AM, 10:00 AM, 2:00 PM, 3:00 PM"
             }
         ]
     }
@@ -165,7 +146,7 @@ async def book_appointment(params: dict):
             "content": [
                 {
                     "type": "text", 
-                    "text": f"Appointment confirmed! Confirmation #APT{appointment_id:04d}"
+                    "text": f"✅ Appointment confirmed for {params.get('patient_name')} with {params.get('provider')} on {params.get('appointment_date')} at {params.get('appointment_time')}. Confirmation number: APT{appointment_id:04d}"
                 }
             ]
         }
@@ -174,7 +155,7 @@ async def book_appointment(params: dict):
             "content": [
                 {
                     "type": "text",
-                    "text": f"Booking failed: {str(e)}"
+                    "text": f"❌ Failed to book appointment: {str(e)}"
                 }
             ]
         }
@@ -186,17 +167,17 @@ async def get_services():
         "content": [
             {
                 "type": "text",
-                "text": "Available services: Primary Care, Dermatology, Physical Therapy. Providers: Dr. Smith, Dr. Johnson, Dr. Brown, Dr. Wilson."
+                "text": "🏥 **Wellness Partners Services:**\n• Primary Care (Dr. Smith, Dr. Johnson)\n• Dermatology (Dr. Brown) \n• Physical Therapy (Dr. Wilson)\n• Mental Health (Dr. Taylor)\n\n📍 Hours: Mon-Fri 8AM-5PM, Sat 9AM-12PM"
             }
         ]
     }
 
-# Webhook endpoints (keep existing)
+# Webhook endpoints (keep as-is)
 @app.post("/telnyx/webhook")
 async def telnyx_webhook(request: dict):
     return {
         "session_id": request.get("call_session_id", "test"),
-        "response": "Welcome to Wellness Partners! How can I help you today?",
+        "response": "Welcome to Wellness Partners! This is Erica, your scheduling assistant. How may I help you today?",
         "dynamic_variables": {
             "patient_name": "Guest",
             "caller_number": request.get("from_number", "")
@@ -212,20 +193,42 @@ async def dynamic_variables(request: dict):
         }
     }
 
+# Debug endpoint to see all appointments
+@app.get("/appointments")
+async def get_appointments():
+    conn = sqlite3.connect('wellness.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM appointments ORDER BY created_at DESC')
+    appointments = cursor.fetchall()
+    conn.close()
+    
+    return {
+        "appointments": [
+            {
+                "id": apt[0],
+                "patient_name": apt[1],
+                "phone_number": apt[2],
+                "date": apt[3],
+                "time": apt[4],
+                "type": apt[5],
+                "provider": apt[6],
+                "created_at": apt[8]
+            }
+            for apt in appointments
+        ]
+    }
+
 @app.get("/")
 async def root():
     return {
-        "message": "Universal Wellness MCP Server is running!",
+        "message": "✅ Fixed MCP Server is running!",
         "status": "healthy",
         "endpoints": {
-            "health": "/",
-            "mcp_tools_standard": "/mcp/tools",
-            "mcp_tools_telnyx": "/v2/ai/mcp_servers/list_tools", 
-            "mcp_tools_simple": "/tools",
-            "mcp_tools_root": "/list_tools",
-            "webhook": "/telnyx/webhook"
-        },
-        "timestamp": datetime.now().isoformat()
+            "mcp_tools": "/mcp/tools (GET & POST)",
+            "tool_execution": "/mcp/tools/{name} (POST)",
+            "webhook": "/telnyx/webhook",
+            "appointments": "/appointments"
+        }
     }
 
 if __name__ == "__main__":

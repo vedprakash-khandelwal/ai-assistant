@@ -1,12 +1,10 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
 import sqlite3
 import json
 from datetime import datetime
 
-app = FastAPI(title="Wellness Center - Telnyx MCP Server")
+app = FastAPI(title="Universal Wellness MCP Server")
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,10 +36,30 @@ def init_db():
 
 init_db()
 
-# Telnyx MCP Tools Discovery - TELNYX SPECIFIC FORMAT
+# 🔥 MULTIPLE MCP ENDPOINT PATTERNS (Try them all)
+
+# Pattern 1: Standard MCP
+@app.get("/mcp/tools")
+async def mcp_tools_standard():
+    return await get_tools_data()
+
+# Pattern 2: Telnyx-specific path
 @app.get("/v2/ai/mcp_servers/list_tools")
-async def list_tools():
-    """Telnyx-specific MCP tools endpoint"""
+async def mcp_tools_telnyx():
+    return await get_tools_data()
+
+# Pattern 3: Simple tools endpoint
+@app.get("/tools")
+async def mcp_tools_simple():
+    return await get_tools_data()
+
+# Pattern 4: Root tools
+@app.get("/list_tools")
+async def mcp_tools_root():
+    return await get_tools_data()
+
+# Common tools data
+async def get_tools_data():
     return {
         "tools": [
             {
@@ -50,10 +68,10 @@ async def list_tools():
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "date": {"type": "string", "description": "Appointment date in YYYY-MM-DD format"},
-                        "time": {"type": "string", "description": "Appointment time in HH:MM format"},
+                        "date": {"type": "string", "description": "Appointment date (YYYY-MM-DD)"},
+                        "time": {"type": "string", "description": "Appointment time (HH:MM)"},
                         "provider": {"type": "string", "description": "Healthcare provider name"},
-                        "appointment_type": {"type": "string", "description": "Type of appointment (Primary Care, Dermatology, etc)"}
+                        "appointment_type": {"type": "string", "description": "Type of appointment"}
                     },
                     "required": ["date", "time", "provider", "appointment_type"]
                 }
@@ -66,8 +84,8 @@ async def list_tools():
                     "properties": {
                         "patient_name": {"type": "string", "description": "Patient's full name"},
                         "phone_number": {"type": "string", "description": "Patient's phone number"},
-                        "appointment_date": {"type": "string", "description": "Appointment date in YYYY-MM-DD format"},
-                        "appointment_time": {"type": "string", "description": "Appointment time in HH:MM format"},
+                        "appointment_date": {"type": "string", "description": "Appointment date (YYYY-MM-DD)"},
+                        "appointment_time": {"type": "string", "description": "Appointment time (HH:MM)"},
                         "appointment_type": {"type": "string", "description": "Type of appointment"},
                         "provider": {"type": "string", "description": "Healthcare provider name"}
                     },
@@ -85,13 +103,24 @@ async def list_tools():
         ]
     }
 
-# Telnyx MCP Tool Execution - TELNYX SPECIFIC FORMAT
+# 🔥 MULTIPLE TOOL EXECUTION ENDPOINTS
+
+@app.post("/mcp/tools/{tool_name}")
+async def execute_tool_standard(tool_name: str, request: dict):
+    return await execute_tool_common(tool_name, request)
+
 @app.post("/v2/ai/mcp_servers/execute_tool")
-async def execute_tool(request: dict):
-    """Telnyx-specific tool execution endpoint"""
+async def execute_tool_telnyx(request: dict):
     tool_name = request.get("name")
     arguments = request.get("arguments", {})
-    
+    return await execute_tool_common(tool_name, arguments)
+
+@app.post("/tools/{tool_name}")
+async def execute_tool_simple(tool_name: str, request: dict):
+    return await execute_tool_common(tool_name, request)
+
+# Common tool execution logic
+async def execute_tool_common(tool_name: str, arguments: dict):
     if tool_name == "check_availability":
         return await check_availability(arguments)
     elif tool_name == "book_appointment":
@@ -101,18 +130,13 @@ async def execute_tool(request: dict):
     else:
         raise HTTPException(status_code=404, detail=f"Tool {tool_name} not found")
 
-# Keep your existing tool implementations
+# Your existing tool implementations
 async def check_availability(params: dict):
-    date = params.get("date", "2024-01-01")
-    time = params.get("time", "14:00")
-    provider = params.get("provider", "Dr. Smith")
-    appointment_type = params.get("appointment_type", "Primary Care")
-    
     return {
         "content": [
             {
                 "type": "text",
-                "text": f"Available appointments with {provider} for {appointment_type} on {date} at {time}. I have slots at 2:00 PM, 3:00 PM, and 4:00 PM."
+                "text": f"Available appointments with {params.get('provider')} on {params.get('date')}. Times: 2:00 PM, 3:00 PM, 4:00 PM"
             }
         ]
     }
@@ -141,7 +165,7 @@ async def book_appointment(params: dict):
             "content": [
                 {
                     "type": "text", 
-                    "text": f"Appointment confirmed for {params.get('patient_name')} with {params.get('provider')} on {params.get('appointment_date')} at {params.get('appointment_time')}. Confirmation number: APT{appointment_id:04d}"
+                    "text": f"Appointment confirmed! Confirmation #APT{appointment_id:04d}"
                 }
             ]
         }
@@ -150,7 +174,7 @@ async def book_appointment(params: dict):
             "content": [
                 {
                     "type": "text",
-                    "text": f"Failed to book appointment: {str(e)}"
+                    "text": f"Booking failed: {str(e)}"
                 }
             ]
         }
@@ -162,17 +186,17 @@ async def get_services():
         "content": [
             {
                 "type": "text",
-                "text": "We offer the following services: Primary Care with Dr. Smith and Dr. Johnson, Dermatology with Dr. Brown, and Physical Therapy with Dr. Wilson. Our hours are Monday-Friday 8AM-5PM."
+                "text": "Available services: Primary Care, Dermatology, Physical Therapy. Providers: Dr. Smith, Dr. Johnson, Dr. Brown, Dr. Wilson."
             }
         ]
     }
 
-# Keep your existing webhook endpoints (they should work fine)
+# Webhook endpoints (keep existing)
 @app.post("/telnyx/webhook")
 async def telnyx_webhook(request: dict):
     return {
         "session_id": request.get("call_session_id", "test"),
-        "response": "Welcome to Wellness Partners! This is Erica, your scheduling assistant. How may I help you today?",
+        "response": "Welcome to Wellness Partners! How can I help you today?",
         "dynamic_variables": {
             "patient_name": "Guest",
             "caller_number": request.get("from_number", "")
@@ -191,13 +215,17 @@ async def dynamic_variables(request: dict):
 @app.get("/")
 async def root():
     return {
-        "message": "Wellness Center Telnyx MCP Server is running!",
+        "message": "Universal Wellness MCP Server is running!",
+        "status": "healthy",
         "endpoints": {
-            "telnyx_mcp_tools": "/v2/ai/mcp_servers/list_tools",
-            "telnyx_mcp_execute": "/v2/ai/mcp_servers/execute_tool",
-            "webhook": "/telnyx/webhook",
-            "dynamic_vars": "/dynamic-variables"
-        }
+            "health": "/",
+            "mcp_tools_standard": "/mcp/tools",
+            "mcp_tools_telnyx": "/v2/ai/mcp_servers/list_tools", 
+            "mcp_tools_simple": "/tools",
+            "mcp_tools_root": "/list_tools",
+            "webhook": "/telnyx/webhook"
+        },
+        "timestamp": datetime.now().isoformat()
     }
 
 if __name__ == "__main__":
